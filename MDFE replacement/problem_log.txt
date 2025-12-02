@@ -1,0 +1,186 @@
+Problem Log — MDFE replacement
+Created: 2025-12-02
+Created by: GitHub Copilot (assistant)
+Purpose: Maintain a running log of problem context, discoveries, decisions, and updates while working on the MDFE replacement task.
+
+---
+
+Initial Context:
+- User role: Data Engineer
+- Workspace/project: `de_learning` repository
+- Log location: `MDFE replacement/problem_log.txt`
+- User request: Keep a log of the problem context and all discoveries/updates in a .txt file inside the `MDFE replacement/` folder. User provided `README.md` (short project readme).
+
+Entry Format (template):
+- Timestamp: YYYY-MM-DD HH:MM UTC
+- Author: (user or assistant)
+- Title: One-line summary
+- Details: Short paragraph describing the discovery/update, commands run, files changed, and next steps.
+- Files: List of file paths created/modified (if any)
+
+Example entry:
+- Timestamp: 2025-12-02 00:00 UTC
+- Author: assistant
+- Title: Created initial problem log file
+- Details: Created `problem_log.txt` with header, initial context, and entry template. Will append updates and discoveries following the agreed template.
+- Files: `MDFE replacement/problem_log.txt`
+
+---
+
+Next actions:
+- Ask the user to paste the initial problem description they want logged (symptoms, error messages, desired behavior, deadlines, stakeholders).
+- Confirm preferred cadence and whether to append entire chat transcripts or only summarized entries.
+
+---
+
+- Timestamp: 2025-12-02 12:00 UTC
+- Author: user
+- Title: MDFE replacement on Azure Synapse — high-level task description
+- Details: The user is working on Azure Synapse. There exists a Spark job named "MDFE" developed by an external team; the user does not have access to the job's source code, only the job JAR file. The user's task is to replace this JAR-based Spark job with an Azure Synapse notebook implementation because notebooks are faster to iterate on and provide clearer failure transparency. The user wants the assistant to keep a running log of problem context, discoveries, decisions, and updates in this file and to help with the replacement process.
+- Files: `MDFE replacement/problem_log.txt`
+
+Next steps suggested:
+- Confirm whether the JAR is available in the repository or in a storage account and, if available, provide its path or upload it to the workspace.
+- If the JAR is not available, gather expected inputs/outputs, sample data, and any run arguments/configurations used by the MDFE job.
+- Plan to extract JAR metadata (manifest, main class, dependencies) and, if possible, runtime behavior by running it in a safe test environment.
+- Scaffold an Azure Synapse notebook that mirrors the job's main stages (data ingestion, transformations, writes) and includes improved logging and error handling.
+
+---
+
+- Timestamp: 2025-12-02 12:05 UTC
+- Author: user
+- Title: JAR stored in storage account — cannot share
+- Details: The MDFE job JAR is stored in a storage account but cannot be shared here due to workplace privacy restrictions. The user confirmed they cannot upload or share the JAR file. This constrains options: I cannot inspect the JAR directly. Alternative approaches are recommended (collect runtime logs, job configuration, manifests from the external team, or run local inspection commands and paste outputs). Guidance and commands for local inspection and required information are provided in the next steps.
+- Files: `MDFE replacement/problem_log.txt`
+
+Next steps suggested given sharing restriction:
+- Provide Synapse job configuration and run arguments (main class, job args, Spark configs, driver/executor sizes, classpath/jars used).
+- Provide recent run logs (stdout/stderr) and pipeline activity JSON that triggers the job.
+- Share sample input data or a small, anonymized dataset and expected output schema/examples.
+- If the user can run commands locally or in a secure environment, run the suggested inspection commands and paste the outputs (manifest, class list, help text, checksum).
+- If direct inspection is impossible, request the external team for the JAR manifest, main class, or a brief runbook describing inputs/outputs and major transformation steps.
+
+---
+
+ - Timestamp: 2025-12-02 12:15 UTC
+ - Author: user
+ - Title: MDFE behavior and processing pattern (properties-driven queries)
+ - Details: MDFE reads a properties file stored in a storage account; the properties file contains a SQL query. MDFE executes that query which reads and joins tables from the `cdz` schema/namespace in a specific way and produces a Spark DataFrame. MDFE then writes the resulting DataFrame as a table to an Azure SQL Database (SQL Server). MDFE accepts different properties files to produce different target tables, making it an agnostic/templated process where the properties file defines the query for the desired output table.
+ - Files: `MDFE replacement/problem_log.txt`
+
+Next steps suggested given this processing pattern:
+- Provide the storage path and format of the properties files (blob container/path and key names), or run the listing/download commands in a secure environment and paste non-sensitive outputs.
+- Share one example properties file (sanitized if necessary) showing how the query is provided (key name, encoding, surrounding metadata such as target table name, connection hints, or write mode).
+- Confirm how MDFE authenticates to the destination Azure SQL Database and whether notebooks should use managed identity, service principal, or secrets.
+- Confirm whether MDFE applies additional business logic beyond the query (post-processing, type casts, schema adjustments, partitions, or CDC handling).
+- Decide on replacement approach: either (A) have the notebook read the properties file and submit the contained query to the same execution engine (Spark SQL or Synapse SQL) to produce a DataFrame, or (B) parse the query in the notebook and run it via JDBC against the source SQL if more appropriate for pushdown performance.
+
+
+
+
+---
+
+
+ - Timestamp: 2025-12-02 12:30 UTC
+ - Author: user
+ - Title: Validation method — comparing MDFE vs notebook output
+ - Details: To ensure equivalence between MDFE output and the notebook replacement, the user compares outputs using the symmetric subtraction approach: `my_table.subtract(mdfe_table).count()` and `mdfe_table.subtract(my_table).count()`, expecting 0 from both calls to confirm identical row sets. This checks for row-level differences but may be affected by duplicate rows, floating-point precision differences, ordering, or non-deterministic columns (timestamps, processing metadata). Recommended mitigations: normalize schemas (cast types, reorder/select same columns), round float columns to a consistent precision, drop non-deterministic columns, and use `exceptAll`/`except` where available. When counts are non-zero, capture diagnostic sample rows and produce a validation report.
+ - Files: `MDFE replacement/problem_log.txt`
+
+Next steps suggested for validation:
+- Add a validation cell to the notebook scaffold that: loads both DataFrames, aligns schemas, applies normalization, computes symmetric difference counts, produces diagnostic samples (first N differing rows), and writes a pass/fail validation report to blob storage.
+- Consider adding a small test harness to run validation automatically after notebook execution and surface failures as pipeline alerts.
+
+ - Timestamp: 2025-12-02 12:50 UTC
+ - Author: user
+ - Title: Validation mismatch — same row counts but differing rows
+ - Details: The user reports that their notebook produces the same total row count as MDFE, but the symmetric subtraction comparison shows some differing rows (non-zero mismatches). So far the user only removed metadata/timestamp columns for validation. This suggests the differences are row-level content differences (values differ) or duplicate/distribution mismatches rather than missing/extra rows.
+ - Files: `MDFE replacement/problem_log.txt`
+
+ - Timestamp: 2025-12-02 13:10 UTC
+ - Author: user
+ - Title: MDFE shows lower non-determinism across runs than notebook
+ - Details: Additional context: comparing two executions of MDFE for a particular properties file shows a 6-row difference between those MDFE runs. Comparing two executions of the user's notebook for the same properties shows a 70-row difference. This implies MDFE applies some additional deterministic steps (implicit deduplication, stable ordering, casting/normalization, or controlled join behavior) that reduce run-to-run variance compared with the notebook implementation.
+ - Files: `MDFE replacement/problem_log.txt`
+
+Suggested prioritized investigation steps (capture results in log):
+- 1) Confirm both workflows run with identical Spark configs: capture `spark.sparkContext.getConf().getAll()` or relevant keys (`spark.sql.shuffle.partitions`, `spark.sql.autoBroadcastJoinThreshold`, `spark.default.parallelism`, `spark.sql.adaptive.enabled`).
+- 2) Compare physical plans: run `df.explain(extended=True)` for both MDFE-produced DF and notebook DF and diff the physical plan sections (broadcast vs shuffle, join strategy, aggregate pushdown).
+- 3) Check duplicate behavior: compute `groupBy(all cols).count()` and compare number of distinct groups vs total rows in both runs; look for implicit dedupe in MDFE.
+- 4) Hash-based multiset comparison (already suggested) to find which value combinations differ — collect small samples and inspect column-level differences.
+- 5) Inspect join keys uniqueness on source tables used by the query: verify whether non-unique keys could produce non-deterministic join multiplicity depending on execution plan.
+- 6) Disable broadcast joins and/or force a join strategy to see if results converge: set `spark.conf.set('spark.sql.autoBroadcastJoinThreshold', -1)` and re-run.
+- 7) Normalize types and nulls aggressively before comparison: cast numeric columns to consistent types and round, cast timestamps/dates to strings, coalesce nulls to sentinel strings for hashing.
+- 8) Search for non-deterministic functions in the query (e.g., `rand()`, `monotonically_increasing_id()`, `current_timestamp()`) and remove or stabilize them.
+- 9) If MDFE writes to Azure SQL using a specific write pattern (batch size, isolation level, upsert vs overwrite), capture those options and match them in the notebook.
+
+Next action: run steps 1–4 in your secure environment and paste sanitized outputs (key spark configs, physical plan snippets, small diagnostic samples) into this chat. I will analyze and recommend a targeted fix (stable dedupe, join rewrite, explicit rounding/casting, or forced join strategy).
+
+ - Timestamp: 2025-12-02 13:40 UTC
+ - Author: user
+ - Title: Execution environment constraint — no Azure terminal access
+ - Details: The user cannot access a terminal on Azure and can only run commands from their local work machine, which runs Windows. All suggested shell/CLI commands and JAR inspections must therefore be executed locally or via approved methods (Azure CLI on Windows, PowerShell, or Synapse Studio UI). The investigation plan should account for this constraint and provide Windows-friendly commands and notebook cells where appropriate.
+ - Files: `MDFE replacement/problem_log.txt`
+
+
+
+Investigation checklist (next actions):
+- Compare schemas of both DataFrames (column names, order, data types) and record any differences.
+- Compute a deterministic row-hash for both DataFrames after normalization and compare hash counts (helps detect value-level differences and duplicate-count issues).
+- Check duplicate row counts (are duplicates expected? is MDFE deduplicating implicitly?).
+- For numeric columns, compare value statistics (min/max/mean/stddev) and apply rounding if necessary.
+- Check for whitespace/case differences in string columns and null vs empty-string mismatches.
+- Use the previously added `df_compare.py` with `write_diagnostics_to` set to a secure blob path to export mismatch rows for offline inspection.
+- If mismatches are small, capture sample rows from both sides side-by-side for manual inspection.
+
+Suggested quick commands to run in your Synapse notebook (sanitized, run in your secure environment):
+
+```python
+# 1) Schema comparison
+print('EXPECTED schema:')
+mdfe_df.printSchema()
+print('ACTUAL schema:')
+my_df.printSchema()
+
+# 2) Basic counts and distinct counts per column
+print('total rows', mdfe_df.count(), my_df.count())
+for c in sorted(set(mdfe_df.columns).intersection(set(my_df.columns))):
+	print(c, 'mdfe distinct=', mdfe_df.select(c).distinct().count(), 'my distinct=', my_df.select(c).distinct().count())
+
+# 3) Row-level deterministic hash (after normalization)
+from pyspark.sql import functions as F
+cols = sorted(list(set(mdfe_df.columns).intersection(set(my_df.columns))))
+norm_mdfe = mdfe_df.select([F.coalesce(F.col(c).cast('string'), F.lit('')).alias(c) for c in cols])
+norm_my = my_df.select([F.coalesce(F.col(c).cast('string'), F.lit('')).alias(c) for c in cols])
+
+mdfe_h = norm_mdfe.withColumn('_hash', F.sha2(F.concat_ws('||', *cols), 256))
+my_h = norm_my.withColumn('_hash', F.sha2(F.concat_ws('||', *cols), 256))
+
+mdfe_hash_counts = mdfe_h.groupBy('_hash').count().withColumnRenamed('count', 'cnt_mdfe')
+my_hash_counts = my_h.groupBy('_hash').count().withColumnRenamed('count', 'cnt_my')
+
+join_hash = mdfe_hash_counts.join(my_hash_counts, on='_hash', how='fullouter').fillna(0)
+diffs = join_hash.where(F.col('cnt_mdfe') != F.col('cnt_my'))
+print('distinct differing hashes:', diffs.count())
+display(diffs.limit(50))
+
+# 4) If diffs small, sample rows by joining on hash back to original rows
+sample_hashes = [r['_hash'] for r in diffs.limit(20).select('_hash').collect()]
+if sample_hashes:
+	mdfe_samples = mdfe_h.where(F.col('_hash').isin(sample_hashes)).limit(100).toPandas()
+	my_samples = my_h.where(F.col('_hash').isin(sample_hashes)).limit(100).toPandas()
+	print('MDFe samples:\n', mdfe_samples.head())
+	print('My samples:\n', my_samples.head())
+
+# 5) Use df_compare diagnostics (if you added the module to workspace / wheel)
+from df_compare import compare_dataframes
+report = compare_dataframes(spark, mdfe_df, my_df, drop_columns=['processing_ts','loaded_at'], float_precision=6, sample_limit=200, write_diagnostics_to='wasbs://<container>@<account>.blob.core.windows.net/diagnostics/mdfe_mismatch')
+print(report)
+```
+
+Record results and attach sanitized diagnostic samples to the problem log or paste key findings here for further analysis.
+
+
+
+
+
