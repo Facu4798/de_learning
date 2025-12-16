@@ -42,6 +42,21 @@ Next actions:
 Next steps suggested:
 - Confirm whether the JAR is available in the repository or in a storage account and, if available, provide its path or upload it to the workspace.
 - If the JAR is not available, gather expected inputs/outputs, sample data, and any run arguments/configurations used by the MDFE job.
+
+- Timestamp: 2025-12-04 09:30 UTC
+- Author: assistant
+- Title: Observed MDFE Spark configs from execution logs
+- Details: The user reported the following Spark configuration entries visible in MDFE's execution logs: `{"spark.sql.parquet.fieldId.read.enabled":"true","spark.sql.parquet.fieldId.write.enabled":"true","spark.synapse.vegas.useCache":"false"}`. Recommendations and implications:
+	- `spark.sql.parquet.fieldId.read.enabled` = `true`: enables reading Parquet fieldId metadata. Useful when source Parquet files include fieldId metadata (from older writers or schema-evolution tools). To match MDFE read behavior, enable this in the notebook when reading MDFE outputs or source Parquet files that may include fieldIds.
+	- `spark.sql.parquet.fieldId.write.enabled` = `true`: enables writing fieldId metadata to Parquet files. This affects how Parquet files are written (adds field ids). Enabling in the replacement notebook will make outputs more similar to MDFE, but note it changes Parquet metadata — test on staging before writing to production.
+	- `spark.synapse.vegas.useCache` = `false`: Synapse-specific flag (controls a Synapse/Vegas optimization/cache behavior). Mirror this to match runtime behavior; generally safe to set.
+
+Actions taken:
+	- Added a small notebook cell to `notebook_cells.md` that sets these three configs at notebook start (with a caution about enabling `fieldId.write` in production).
+	- Suggest running the notebook with these settings enabled during validation runs to reduce config-driven differences. If validation succeeds, consider whether `fieldId.write` should be kept for production writes or limited to a staging validation run.
+
+Next steps: Run the notebook with the updated cell and re-run the hash-based comparison. If mismatches persist, collect `df.explain(extended=True)` and the `spark_conf.json` output for analysis.
+- Files: `MDFE replacement/notebook_cells.md`, `MDFE replacement/problem_log.txt`
 - Plan to extract JAR metadata (manifest, main class, dependencies) and, if possible, runtime behavior by running it in a safe test environment.
 - Scaffold an Azure Synapse notebook that mirrors the job's main stages (data ingestion, transformations, writes) and includes improved logging and error handling.
 
@@ -122,6 +137,50 @@ Next action: run steps 1–4 in your secure environment and paste sanitized outp
  - Details: The user cannot access a terminal on Azure and can only run commands from their local work machine, which runs Windows. All suggested shell/CLI commands and JAR inspections must therefore be executed locally or via approved methods (Azure CLI on Windows, PowerShell, or Synapse Studio UI). The investigation plan should account for this constraint and provide Windows-friendly commands and notebook cells where appropriate.
  - Files: `MDFE replacement/problem_log.txt`
 
+ - Timestamp: 2025-12-03 09:20 UTC
+ - Author: user
+ - Title: Spark config experiments — observed effects on non-determinism
+ - Details: The user experimented with Spark configuration settings while validating two tables. Observations:
+	 - Table `T_CLM`: with `spark.adaptive.enabled=false`, `spark.default.parallelism=200`, `spark.sql.autoBroadcastJoinThreshold=-1`, and `spark.sql.shuffle.partitions=1` the user's notebook runs became deterministic (0 row difference between two notebook executions). Previously the notebook had ~300 row variance between runs; comparison with MDFE remained ~70 rows difference. MDFE's own runs still differ by ~6 rows.
+	 - Table `T_UW_COMM`: applying the full config above increased variance for the notebook, but simply setting `spark.adaptive.enabled=false` made notebook inter-run variance match MDFE inter-run variance for this table.
+
+ Implications / hypotheses:
+ - Adaptive query execution (AQE) seems to be a key factor: disabling `spark.adaptive.enabled` reduced non-determinism for `T_UW_COMM` and contributed to stabilizing `T_CLM` when combined with other forced settings.
+ - For `T_CLM`, forcing no broadcast joins and reducing shuffle partitions eliminated run-to-run variance in the notebook; this suggests join strategy and shuffle behavior affected multiplicity or ordering in edge cases.
+ - MDFE likely applies some combination of deterministic safeguards (stable join pattern, controlled shuffle/partitioning, or final dedup/ordering) which make it less non-deterministic than an out-of-the-box notebook run.
+
+Next steps suggested:
+ - Capture the exact Spark configs used in the successful deterministic notebook run for `T_CLM` and the run that matched MDFE for `T_UW_COMM` and save them to the log.
+ - For each table, compare physical plans and hash-diff diagnostics under (a) default notebook config, (b) notebook config that produced determinism, and (c) MDFE run to see which plan differences correlate with mismatches.
+ - Try narrower changes to isolate cause (e.g., toggle AQE alone, toggle broadcast threshold alone, vary shuffle.partitions) and record results.
+ - If stable, add a small reproducible experiment notebook cell that sets the working config, runs the query twice, and reports inter-run diffs so you can capture reproducible evidence for a PR or runbook.
+
+Files: `MDFE replacement/problem_log.txt`
+
+
+
+ Timestamp: 2025-12-16 12:00 UTC
+ Author: user
+ Title: Validation complete — MDFE parity improved; issue closed
+ Details: I applied the MDFE-observed Spark configs from the job logs and deactivated Adaptive Query Execution (AQE) during validation runs. After those changes, my notebook replacement is now less non-deterministic than the original MDFE job for the tested tables. Given this, we can consider the current issue resolved. We'll monitor for future regressions and open new issues if further discrepancies appear. No further immediate action is required.
+ Files: `MDFE replacement/notebook_cells.md`, `MDFE replacement/problem_log.txt`
+
+- Timestamp: 2025-12-16 12:00 UTC
+- Author: user
+- Title: Validation complete — MDFE parity improved; issue closed
+- Details: I applied the MDFE-observed Spark configs from the job logs and deactivated Adaptive Query Execution (AQE) during validation runs. After those changes, my notebook replacement is now less non-deterministic than the original MDFE job for the tested tables. Given this, we can consider the current issue resolved. We'll monitor for future regressions and open new issues if further discrepancies appear. No further immediate action is required.
+- Files: `MDFE replacement/notebook_cells.md`, `MDFE replacement/problem_log.txt`
+
+- Timestamp: 2025-12-03 12:15 UTC
+- Author: user
+- Title: Legacy timeline context — queries from 2023–2024, MDFE older
+- Details: The SQL queries captured by the properties files were authored in 2023 and 2024; the underlying `MDFE` job predates these and is therefore older/legacy. This increases the chance of compatibility quirks (deprecated SQL constructs, implicit casting behavior, reliance on older Spark defaults, or environment-specific assumptions). Tests and normalization should account for this timeline by:
+	- Requesting sanitized example properties/SQL from representative years (one from 2023 and one from 2024) to reproduce quirks.
+	- Applying conservative normalization (explicit CASTs, rounding, trimming) in the notebook scaffold to reduce variance across runtime defaults.
+	- Running comparison on a small, stable sample and iterating join hints and broadcast settings to match MDFE behavior.
+Next steps: User to paste sanitized SQL examples or indicate whether to proceed with generic normalization adjustments in the notebook; then run diagnostics in Synapse Studio and share results.
+- Files: `MDFE replacement/notebook_cells.md`, `MDFE replacement/README_NOTEBOOK.md`, `MDFE replacement/problem_log.txt`
+
 
 
 Investigation checklist (next actions):
@@ -146,6 +205,8 @@ my_df.printSchema()
 print('total rows', mdfe_df.count(), my_df.count())
 for c in sorted(set(mdfe_df.columns).intersection(set(my_df.columns))):
 	print(c, 'mdfe distinct=', mdfe_df.select(c).distinct().count(), 'my distinct=', my_df.select(c).distinct().count())
+
+
 
 # 3) Row-level deterministic hash (after normalization)
 from pyspark.sql import functions as F
